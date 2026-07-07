@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Check In · Checkpoint Attendance</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg: #0B1220;
+    --surface: #101A2E;
+    --surface-2: #16223B;
+    --border: #24314A;
+    --text: #E7ECF5;
+    --muted: #8593AD;
+    --accent: #35E0A1;
+    --amber: #F5B942;
+    --danger: #F2545B;
+  }
+  body{ background:var(--bg); color:var(--text); font-family:'Inter',sans-serif; }
+  .font-display{ font-family:'Space Grotesk',sans-serif; }
+  .font-mono{ font-family:'JetBrains Mono',monospace; }
+  .panel{ background:var(--surface); border:1px solid var(--border); border-radius:16px; }
+  input[type=text]{ background:var(--surface-2); border:1px solid var(--border); color:var(--text);
+    border-radius:10px; padding:12px 14px; font-size:15px; width:100%; }
+  input[type=text]:focus{ outline:none; border-color:var(--accent); }
+  .btn-primary{ background:var(--accent); color:#04241A; font-weight:700; border-radius:10px; padding:13px; width:100%; font-size:15px; border:none; }
+  .btn-primary:disabled{ opacity:0.4; }
+  .scan-frame{ position:relative; border-radius:14px; overflow:hidden; background:#000; aspect-ratio:1/1; }
+  .reticle{ position:absolute; inset:0; pointer-events:none; }
+  .reticle::before{ content:""; position:absolute; inset:12%; border:2px solid var(--accent); border-radius:12px; opacity:0.85; }
+  .status-dot{ width:9px; height:9px; border-radius:9999px; display:inline-block; margin-right:6px; }
+  .dot-waiting{ background:var(--amber); animation:blink 1.2s infinite; }
+  .dot-locked{ background:var(--accent); }
+  @keyframes blink{ 50%{ opacity:0.3; } }
+  .banner{ border-radius:12px; padding:14px 16px; font-size:14px; }
+  .banner-success{ background:rgba(53,224,161,0.10); border:1px solid rgba(53,224,161,0.3); color:var(--accent); }
+  .banner-error{ background:rgba(242,84,91,0.10); border:1px solid rgba(242,84,91,0.3); color:var(--danger); }
+
+  /* Stage transition: fade + slide up when a screen becomes active */
+  .stage{ display:none; }
+  .stage.active{ display:block; animation:reveal 0.35s ease; }
+  @keyframes reveal{ from{ opacity:0; transform:translateY(8px); } to{ opacity:1; transform:translateY(0); } }
+
+  .badge-circle{ width:56px; height:56px; border-radius:9999px; display:flex; align-items:center; justify-content:center; margin:0 auto; }
+  .badge-success{ background:rgba(53,224,161,0.12); border:1px solid rgba(53,224,161,0.35); }
+  .badge-locked{ background:rgba(133,147,173,0.12); border:1px solid rgba(133,147,173,0.3); }
+</style>
+</head>
+<body class="min-h-screen flex items-start justify-center px-4 py-8">
+
+<div class="w-full max-w-sm">
+
+  <div class="text-center mb-6">
+    <div class="font-mono text-xs text-[var(--muted)] tracking-widest uppercase mb-1">Checkpoint</div>
+    <h1 class="font-display text-2xl font-bold" id="pageTitle">Scan to Check In</h1>
+  </div>
+
+  <!-- STAGE 0: this device already used (persistent lock, survives page refresh) -->
+  <div id="lockedStage" class="stage panel p-6 text-center">
+    <div class="badge-circle badge-locked mb-4">
+      <span class="font-mono text-lg">✓</span>
+    </div>
+    <p class="font-semibold mb-1">This device already checked someone in</p>
+    <p id="lockedDetails" class="text-sm text-[var(--muted)] mb-4"></p>
+    <p class="text-xs text-[var(--muted)] leading-relaxed">
+      Each device can only be used to check in one person. If this is a mistake, please ask a staff member.
+    </p>
+    <button onclick="resetThisDevice()" class="text-xs text-[var(--muted)] underline mt-4">
+      Not you? Reset this device
+    </button>
+  </div>
+
+  <!-- STAGE 1: camera scanner -->
+  <div id="scanStage" class="stage panel p-4">
+    <div class="scan-frame mb-3">
+      <video id="video" class="w-full h-full object-cover" playsinline muted></video>
+      <div class="reticle"></div>
+    </div>
+    <canvas id="canvas" class="hidden"></canvas>
+
+    <div class="flex items-center justify-center text-sm font-mono mb-1">
+      <span id="statusDot" class="status-dot dot-waiting"></span>
+      <span id="statusText">Point your camera at the screen…</span>
+    </div>
+
+    <!-- Fallback for devices without camera access / testing without a live QR -->
+    <details class="text-xs text-[var(--muted)] text-center mt-2">
+      <summary class="cursor-pointer select-none">Camera not working? Enter code manually</summary>
+      <input type="text" id="manualToken" placeholder="Paste token from admin screen" class="mt-2" />
+    </details>
+  </div>
+
+  <!-- STAGE 2: form — only appears once a valid QR/token has been captured -->
+  <div id="formStage" class="stage panel p-5 mt-5">
+    <div class="flex items-center gap-2 mb-4 text-sm font-mono text-[var(--accent)]">
+      <span class="status-dot dot-locked"></span> QR code detected — enter your details
+    </div>
+    <div class="space-y-3 mb-4">
+      <div>
+        <label class="text-xs text-[var(--muted)] mb-1 block">Full Name</label>
+        <input type="text" id="fullName" placeholder="Jane Doe" autocomplete="name" />
+      </div>
+      <div>
+        <label class="text-xs text-[var(--muted)] mb-1 block">ID Number</label>
+        <input type="text" id="idNumber" placeholder="Student / Employee ID" autocomplete="off" />
+      </div>
+    </div>
+
+    <button id="submitBtn" onclick="submitCheckin()" class="btn-primary">
+      Check In
+    </button>
+
+    <div id="resultBanner" class="banner mt-4 hidden"></div>
+  </div>
+
+  <!-- STAGE 3: success — shown right after a successful check-in, replaces the form -->
+  <div id="successStage" class="stage panel p-6 text-center">
+    <div class="badge-circle badge-success mb-4">
+      <span class="font-mono text-lg text-[var(--accent)]">✓</span>
+    </div>
+    <p class="font-semibold mb-1">You're checked in</p>
+    <p id="successDetails" class="text-sm text-[var(--muted)]"></p>
+  </div>
+
+</div>
+
+<script>
+// ---------------------------------------------------------------------
+// STAGE MANAGEMENT
+// Only one of these is visible at a time:
+//   lockedStage  -> this device already completed a check-in (persists across reloads)
+//   scanStage    -> camera scanning, waiting for a valid QR code
+//   formStage    -> a token was just captured, name/ID form is now shown
+//   successStage -> check-in just succeeded
+// ---------------------------------------------------------------------
+const stages = ["lockedStage", "scanStage", "formStage", "successStage"];
+function showStage(id) {
+  stages.forEach(s => document.getElementById(s).classList.remove("active"));
+  document.getElementById(id).classList.add("active");
+}
+
+let scannedToken = null;
+let scanningActive = true;
+
+// ---------------------------------------------------------------------
+// DEVICE ID + LOCAL "ALREADY CHECKED IN" FLAG
+// ---------------------------------------------------------------------
+// deviceId is sent with every check-in so the SERVER can enforce "one
+// device = one person" even if local storage is cleared (it also checks
+// the submitting IP address, which localStorage can't touch).
+//
+// checkpoint_checked_in is a separate, purely front-end convenience: once
+// THIS device successfully checks someone in, we remember it here so the
+// page skips straight to a locked screen next time, instead of letting
+// someone open the camera again and wonder why a second submission fails.
+// Clearing it (via "Reset this device" below) only affects this cosmetic
+// layer — the server-side rule based on IP/device_id still applies.
+// ---------------------------------------------------------------------
+function getDeviceId() {
+  const KEY = "checkpoint_device_id";
+  let id = localStorage.getItem(KEY);
+  if (!id) {
+    id = (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`);
+    localStorage.setItem(KEY, id);
+  }
+  return id;
+}
+const deviceId = getDeviceId();
+
+function getLockedRecord() {
+  const raw = localStorage.getItem("checkpoint_checked_in");
+  return raw ? JSON.parse(raw) : null;
+}
+function setLockedRecord(full_name, id_number) {
+  localStorage.setItem("checkpoint_checked_in", JSON.stringify({ full_name, id_number }));
+}
+function resetThisDevice() {
+  localStorage.removeItem("checkpoint_checked_in");
+  location.reload();
+}
+
+const video = document.getElementById("video");
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d", { willReadFrequently: true });
+const statusDot = document.getElementById("statusDot");
+const statusText = document.getElementById("statusText");
+const submitBtn = document.getElementById("submitBtn");
+const manualTokenInput = document.getElementById("manualToken");
+
+// ---------------------------------------------------------------------
+// ENTRY POINT: decide which stage to start on
+// ---------------------------------------------------------------------
+function init() {
+  const locked = getLockedRecord();
+  if (locked) {
+    document.getElementById("lockedDetails").textContent =
+      `Checked in as ${locked.full_name} (${locked.id_number}).`;
+    showStage("lockedStage");
+    return; // don't even start the camera
+  }
+  showStage("scanStage");
+  startCamera();
+}
+
+// ---------------------------------------------------------------------
+// CAMERA SETUP + jsQR SCAN LOOP
+// ---------------------------------------------------------------------
+async function startCamera() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: "environment" } // rear camera on phones
+    });
+    video.srcObject = stream;
+    await video.play();
+    requestAnimationFrame(scanFrame);
+  } catch (err) {
+    statusText.textContent = "Camera unavailable — use manual entry below.";
+  }
+}
+
+function stopCamera() {
+  scanningActive = false;
+  const stream = video.srcObject;
+  if (stream) {
+    stream.getTracks().forEach(track => track.stop());
+  }
+}
+
+function scanFrame() {
+  if (!scanningActive) return;
+
+  if (video.readyState === video.HAVE_ENOUGH_DATA) {
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const code = jsQR(imageData.data, imageData.width, imageData.height);
+
+    if (code && code.data) {
+      onTokenDetected(code.data);
+    }
+  }
+  requestAnimationFrame(scanFrame);
+}
+
+function onTokenDetected(token) {
+  const isFirstDetection = !scannedToken;
+  scannedToken = token;
+  statusDot.className = "status-dot dot-locked";
+  statusText.textContent = "QR code detected";
+
+  // The form only needs to appear once — after that, keep scanning
+  // quietly in the background so scannedToken stays fresh while the
+  // person types (the code rotates every 10s).
+  if (isFirstDetection) {
+    showStage("formStage");
+    document.getElementById("fullName").focus();
+  }
+}
+
+// If using manual entry instead of camera
+manualTokenInput.addEventListener("input", () => {
+  const val = manualTokenInput.value.trim();
+  if (val) {
+    onTokenDetected(val);
+  }
+});
+
+// ---------------------------------------------------------------------
+// SUBMIT CHECK-IN
+// ---------------------------------------------------------------------
+async function submitCheckin() {
+  const full_name = document.getElementById("fullName").value.trim();
+  const id_number = document.getElementById("idNumber").value.trim();
+  const banner = document.getElementById("resultBanner");
+
+  banner.classList.add("hidden");
+
+  if (!full_name || !id_number) {
+    showBanner(false, "Please enter both your name and ID number.");
+    return;
+  }
+  if (!scannedToken) {
+    showBanner(false, "No QR code detected yet.");
+    return;
+  }
+
+  submitBtn.disabled = true;
+  submitBtn.textContent = "Checking in…";
+
+  try {
+    const res = await fetch("/api/checkin", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ full_name, id_number, token: scannedToken, device_id: deviceId })
+    });
+    const data = await res.json();
+
+    if (data.success) {
+      // Lock this device permanently (until manually reset) and stop
+      // the camera — no way to submit a second person from here on.
+      setLockedRecord(full_name, id_number);
+      stopCamera();
+      document.getElementById("successDetails").textContent = data.message;
+      showStage("successStage");
+    } else {
+      showBanner(false, data.message);
+      submitBtn.disabled = false;
+      submitBtn.textContent = "Check In";
+    }
+  } catch (err) {
+    showBanner(false, "Network error — check that you're on the same Wi-Fi as the host.");
+    submitBtn.disabled = false;
+    submitBtn.textContent = "Check In";
+  }
+}
+
+function showBanner(success, message) {
+  const banner = document.getElementById("resultBanner");
+  banner.textContent = message;
+  banner.className = "banner mt-4 " + (success ? "banner-success" : "banner-error");
+}
+
+init();
+</script>
+
+</body>
+</html>

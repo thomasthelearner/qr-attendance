@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Admin · Checkpoint Attendance</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg: #0B1220;
+    --surface: #101A2E;
+    --surface-2: #16223B;
+    --border: #24314A;
+    --text: #E7ECF5;
+    --muted: #8593AD;
+    --accent: #35E0A1;      /* live / verified signal */
+    --accent-dim: #1B6B4E;
+    --amber: #F5B942;       /* absent / pending */
+    --danger: #F2545B;
+  }
+  body{ background:var(--bg); color:var(--text); font-family:'Inter',sans-serif; }
+  .font-display{ font-family:'Space Grotesk',sans-serif; }
+  .font-mono{ font-family:'JetBrains Mono',monospace; }
+
+  .panel{ background:var(--surface); border:1px solid var(--border); border-radius:14px; }
+
+  .live-dot{ width:8px; height:8px; border-radius:9999px; background:var(--accent);
+    box-shadow:0 0 0 0 rgba(53,224,161,0.6); animation:pulse 1.6s infinite; }
+  @keyframes pulse{
+    0%{ box-shadow:0 0 0 0 rgba(53,224,161,0.55); }
+    70%{ box-shadow:0 0 0 8px rgba(53,224,161,0); }
+    100%{ box-shadow:0 0 0 0 rgba(53,224,161,0); }
+  }
+
+  .qr-frame{ position:relative; padding:14px; background:#fff; border-radius:12px; }
+  .qr-frame::before, .qr-frame::after{
+    content:""; position:absolute; width:22px; height:22px; border:3px solid var(--accent);
+  }
+  .qr-frame::before{ top:-8px; left:-8px; border-right:none; border-bottom:none; border-radius:6px 0 0 0; }
+  .qr-frame::after{ bottom:-8px; right:-8px; border-left:none; border-top:none; border-radius:0 0 6px 0; }
+
+  .scanline{ position:absolute; left:14px; right:14px; height:2px; background:linear-gradient(90deg, transparent, var(--accent), transparent);
+    opacity:0.85; animation:sweep linear infinite; }
+  @keyframes sweep{ 0%{ top:14px; } 100%{ top:calc(100% - 16px); } }
+
+  .status-pill{ display:inline-flex; align-items:center; gap:6px; padding:2px 10px; border-radius:9999px; font-size:12px; font-weight:600; }
+  .status-present{ background:rgba(53,224,161,0.12); color:var(--accent); border:1px solid rgba(53,224,161,0.3); }
+  .status-absent{ background:rgba(245,185,66,0.10); color:var(--amber); border:1px solid rgba(245,185,66,0.28); }
+
+  .flag-pill{ display:inline-flex; align-items:center; gap:5px; padding:2px 8px; border-radius:9999px; font-size:11px; font-weight:600;
+    background:rgba(242,84,91,0.12); color:var(--danger); border:1px solid rgba(242,84,91,0.32); white-space:nowrap; }
+  tr.flagged-row td{ background:rgba(242,84,91,0.04); }
+
+  .btn{ border-radius:9px; padding:8px 14px; font-weight:600; font-size:13px; transition:.15s; border:1px solid transparent; }
+  .btn-accent{ background:var(--accent); color:#04241A; }
+  .btn-accent:hover{ filter:brightness(1.08); }
+  .btn-ghost{ background:transparent; border-color:var(--border); color:var(--text); }
+  .btn-ghost:hover{ background:var(--surface-2); }
+  .btn-danger-ghost{ background:transparent; border-color:rgba(242,84,91,0.35); color:var(--danger); }
+  .btn-danger-ghost:hover{ background:rgba(242,84,91,0.08); }
+
+  table{ border-collapse:collapse; width:100%; }
+  th{ text-align:left; font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); font-weight:600; padding:10px 14px; border-bottom:1px solid var(--border); }
+  td{ padding:12px 14px; border-bottom:1px solid var(--border); font-size:14px; }
+  tr:hover td{ background:rgba(255,255,255,0.015); }
+
+  .modal-backdrop{ background:rgba(6,10,18,0.7); backdrop-filter:blur(2px); }
+  input[type=text], select{ background:var(--surface-2); border:1px solid var(--border); color:var(--text); border-radius:8px; padding:9px 12px; font-size:14px; width:100%; }
+  input[type=text]:focus, select:focus{ outline:none; border-color:var(--accent); }
+</style>
+</head>
+<body class="min-h-screen">
+
+<div class="max-w-6xl mx-auto px-6 py-8">
+
+  <!-- Header -->
+  <div class="flex items-center justify-between mb-8">
+    <div>
+      <div class="flex items-center gap-2 text-xs font-mono text-[var(--muted)] mb-1">
+        <span id="connDot" class="live-dot"></span>
+        <span id="connLabel">CONNECTING…</span>
+      </div>
+      <h1 class="font-display text-2xl font-bold tracking-tight">Checkpoint Attendance — Admin</h1>
+    </div>
+    <div class="flex gap-2">
+      <button onclick="openManualAddModal()" class="btn btn-ghost">+ Manually Add Record</button>
+      <a href="/api/export_csv" class="btn btn-accent">Export CSV</a>
+    </div>
+  </div>
+
+  <div class="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-6">
+
+    <!-- QR Panel -->
+    <div class="panel p-6 flex flex-col items-center h-fit sticky top-6">
+      <div class="text-xs font-mono text-[var(--muted)] uppercase tracking-wider mb-4">Live Check-in Code</div>
+      <div class="qr-frame">
+        <img id="qrImage" src="" alt="Rotating QR Code" width="200" height="200" />
+        <div class="scanline" id="scanline" style="animation-duration:2.4s;"></div>
+      </div>
+      <div class="mt-5 w-full">
+        <div class="flex justify-between text-xs font-mono text-[var(--muted)] mb-1">
+          <span>REFRESHES IN</span>
+          <span id="countdownText">10.0s</span>
+        </div>
+        <div class="w-full h-1.5 bg-[var(--surface-2)] rounded-full overflow-hidden">
+          <div id="countdownBar" class="h-full bg-[var(--accent)]" style="width:100%; transition:width 0.2s linear;"></div>
+        </div>
+      </div>
+      <p class="text-xs text-[var(--muted)] mt-4 text-center leading-relaxed">
+        Code rotates every 10 seconds. A screenshot becomes invalid almost immediately.
+      </p>
+    </div>
+
+    <!-- Ledger -->
+    <div class="panel overflow-hidden">
+      <div class="flex items-center justify-between px-5 py-4 border-b border-[var(--border)]">
+        <h2 class="font-display font-semibold">Attendance Ledger</h2>
+        <span id="recordCount" class="text-xs font-mono text-[var(--muted)]">0 records</span>
+      </div>
+      <div class="overflow-x-auto">
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>ID Number</th>
+              <th>Status</th>
+              <th>Timestamp</th>
+              <th>Method</th>
+              <th>Source</th>
+              <th class="text-right">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="ledgerBody">
+            <!-- rows injected by JS -->
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Manual Add Modal -->
+<div id="manualAddModal" class="fixed inset-0 modal-backdrop hidden items-center justify-center z-50">
+  <div class="panel w-full max-w-sm p-6">
+    <h3 class="font-display font-semibold mb-4">Manually Add Record</h3>
+    <div class="space-y-3">
+      <div>
+        <label class="text-xs text-[var(--muted)] mb-1 block">Full Name</label>
+        <input type="text" id="manualName" placeholder="Jane Doe" />
+      </div>
+      <div>
+        <label class="text-xs text-[var(--muted)] mb-1 block">ID Number</label>
+        <input type="text" id="manualId" placeholder="EMP-0042" />
+      </div>
+      <div>
+        <label class="text-xs text-[var(--muted)] mb-1 block">Initial Status</label>
+        <select id="manualStatus">
+          <option value="Absent">Absent</option>
+          <option value="Present">Present</option>
+        </select>
+      </div>
+    </div>
+    <div class="flex justify-end gap-2 mt-6">
+      <button onclick="closeManualAddModal()" class="btn btn-ghost">Cancel</button>
+      <button onclick="submitManualAdd()" class="btn btn-accent">Add Record</button>
+    </div>
+    <p id="manualAddError" class="text-xs text-[var(--danger)] mt-2 hidden"></p>
+  </div>
+</div>
+
+<script>
+// ---------------------------------------------------------------------
+// WEBSOCKET: receives live QR rotations + attendance updates from server
+// ---------------------------------------------------------------------
+let ws;
+let countdownInterval;
+let currentExpiresIn = 10;
+let currentStepSeconds = 10;
+
+function connectWebSocket() {
+  const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+  ws = new WebSocket(`${protocol}//${location.host}/ws/admin`);
+
+  ws.onopen = () => {
+    document.getElementById("connLabel").textContent = "LIVE";
+    document.getElementById("connDot").style.background = "var(--accent)";
+  };
+
+  ws.onclose = () => {
+    document.getElementById("connLabel").textContent = "RECONNECTING…";
+    document.getElementById("connDot").style.background = "var(--danger)";
+    setTimeout(connectWebSocket, 1500); // auto-reconnect
+  };
+
+  ws.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+    if (data.type === "qr") {
+      handleQrUpdate(data);
+    } else if (data.type === "attendance") {
+      renderLedger(data.records);
+    }
+  };
+}
+
+function handleQrUpdate(data) {
+  document.getElementById("qrImage").src = data.qr_image;
+  currentExpiresIn = data.expires_in;
+  currentStepSeconds = data.step_seconds;
+  document.getElementById("scanline").style.animationDuration = currentStepSeconds + "s";
+  restartCountdown();
+}
+
+function restartCountdown() {
+  clearInterval(countdownInterval);
+  let remaining = currentExpiresIn;
+  updateCountdownUI(remaining);
+  countdownInterval = setInterval(() => {
+    remaining = Math.max(0, remaining - 0.1);
+    updateCountdownUI(remaining);
+    if (remaining <= 0) clearInterval(countdownInterval);
+  }, 100);
+}
+
+function updateCountdownUI(remaining) {
+  document.getElementById("countdownText").textContent = remaining.toFixed(1) + "s";
+  document.getElementById("countdownBar").style.width = (remaining / currentStepSeconds * 100) + "%";
+}
+
+// ---------------------------------------------------------------------
+// LEDGER RENDERING
+// ---------------------------------------------------------------------
+function renderLedger(records) {
+  const body = document.getElementById("ledgerBody");
+  document.getElementById("recordCount").textContent = records.length + " record" + (records.length === 1 ? "" : "s");
+
+  if (records.length === 0) {
+    body.innerHTML = `<tr><td colspan="7" class="text-center text-[var(--muted)] py-8">No records yet — waiting for check-ins.</td></tr>`;
+    return;
+  }
+
+  body.innerHTML = records.map(r => `
+    <tr class="${r.flagged ? 'flagged-row' : ''}">
+      <td>${escapeHtml(r.full_name)}</td>
+      <td class="font-mono text-[var(--muted)]">${escapeHtml(r.id_number)}</td>
+      <td>
+        <span class="status-pill ${r.status === 'Present' ? 'status-present' : 'status-absent'}">
+          ${r.status}
+        </span>
+      </td>
+      <td class="font-mono text-[var(--muted)]">${r.timestamp ? escapeHtml(r.timestamp) : '—'}</td>
+      <td class="text-[var(--muted)]">${escapeHtml(r.method)}</td>
+      <td class="font-mono text-[var(--muted)] text-xs">
+        ${r.source_ip ? escapeHtml(r.source_ip) : '—'}
+        ${r.flagged ? '<br/><span class="flag-pill">⚠ shared device</span>' : ''}
+      </td>
+      <td class="text-right space-x-2 whitespace-nowrap">
+        <button onclick="toggleStatus(${r.id}, '${r.status}')" class="btn btn-ghost !py-1 !px-2 text-xs">
+          ${r.status === 'Present' ? 'Mark Absent' : 'Mark Present'}
+        </button>
+        <button onclick="deleteRecord(${r.id})" class="btn btn-danger-ghost !py-1 !px-2 text-xs">Delete</button>
+      </td>
+    </tr>
+  `).join("");
+}
+
+function escapeHtml(str) {
+  const div = document.createElement("div");
+  div.textContent = str ?? "";
+  return div.innerHTML;
+}
+
+// ---------------------------------------------------------------------
+// CRUD ACTIONS
+// ---------------------------------------------------------------------
+async function toggleStatus(id, currentStatus) {
+  const newStatus = currentStatus === "Present" ? "Absent" : "Present";
+  await fetch(`/api/update_status/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ status: newStatus })
+  });
+  // No need to manually refresh — server broadcasts the update over WS
+}
+
+async function deleteRecord(id) {
+  if (!confirm("Delete this record permanently?")) return;
+  await fetch(`/api/delete/${id}`, { method: "DELETE" });
+}
+
+function openManualAddModal() {
+  document.getElementById("manualAddModal").classList.remove("hidden");
+  document.getElementById("manualAddModal").classList.add("flex");
+  document.getElementById("manualAddError").classList.add("hidden");
+}
+function closeManualAddModal() {
+  document.getElementById("manualAddModal").classList.add("hidden");
+  document.getElementById("manualAddModal").classList.remove("flex");
+  document.getElementById("manualName").value = "";
+  document.getElementById("manualId").value = "";
+}
+
+async function submitManualAdd() {
+  const full_name = document.getElementById("manualName").value.trim();
+  const id_number = document.getElementById("manualId").value.trim();
+  const status = document.getElementById("manualStatus").value;
+  const errorEl = document.getElementById("manualAddError");
+
+  if (!full_name || !id_number) {
+    errorEl.textContent = "Name and ID number are both required.";
+    errorEl.classList.remove("hidden");
+    return;
+  }
+
+  const res = await fetch("/api/manual_add", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ full_name, id_number, status })
+  });
+
+  if (!res.ok) {
+    const err = await res.json();
+    errorEl.textContent = err.detail || "Failed to add record.";
+    errorEl.classList.remove("hidden");
+    return;
+  }
+
+  closeManualAddModal();
+}
+
+// Kick things off
+connectWebSocket();
+</script>
+
+</body>
+</html>
