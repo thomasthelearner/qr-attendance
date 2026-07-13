@@ -161,14 +161,8 @@
     <!-- Ledger -->
     <div class="panel overflow-hidden h-fit">
       <div class="flex items-center justify-between px-5 py-4 border-b border-[var(--border)]">
-        <div>
-          <h2 class="font-display font-semibold">Attendance Ledger</h2>
-          <p id="viewingBanner" class="text-xs text-[var(--amber)] mt-1 hidden"></p>
-        </div>
-        <div class="flex items-center gap-3">
-          <button id="backToLiveBtn" onclick="backToLive()" class="btn btn-ghost !py-1 !px-2 text-xs hidden">← Back to Live</button>
-          <span id="recordCount" class="text-xs font-mono text-[var(--muted)]">0 records</span>
-        </div>
+        <h2 class="font-display font-semibold">Attendance Ledger</h2>
+        <span id="recordCount" class="text-xs font-mono text-[var(--muted)]">0 records</span>
       </div>
       <div class="overflow-x-auto">
         <table>
@@ -247,8 +241,6 @@ let ws;
 let countdownInterval;
 let currentExpiresIn = 10;
 let currentStepSeconds = 10;
-let liveRecords = [];           // most recent records pushed for the ACTIVE session
-let viewingSessionId = null;    // null = showing live session; otherwise viewing an archived one
 
 function connectWebSocket() {
   const protocol = location.protocol === "https:" ? "wss:" : "ws:";
@@ -270,10 +262,7 @@ function connectWebSocket() {
     if (data.type === "qr") {
       handleQrUpdate(data);
     } else if (data.type === "attendance") {
-      liveRecords = data.records;
-      if (viewingSessionId === null) {
-        renderLedger(liveRecords);
-      }
+      renderLedger(data.records);
     }
   };
 }
@@ -286,12 +275,7 @@ function handleQrUpdate(data) {
   const endBtn = document.getElementById("endSessionBtn");
   const exportLink = document.getElementById("exportLink");
 
-  // Defensive: only treat this as "active" if we truly have BOTH a
-  // session object AND an actual image string. This prevents ever
-  // setting <img src="null"> even if the two ever got out of sync.
-  const hasQr = data.active_session && data.qr_image;
-
-  if (!hasQr) {
+  if (!data.active_session) {
     activeWrap.classList.add("hidden");
     emptyWrap.classList.remove("hidden");
     pill.textContent = "No active session";
@@ -398,14 +382,12 @@ async function submitStartSession() {
     body: JSON.stringify({ name })
   });
   closeStartSessionModal();
-  backToLive();
   loadSessionHistory();
 }
 
 async function endSession() {
   if (!confirm("End the current session? No more check-ins will be accepted until a new session starts.")) return;
   await fetch("/api/sessions/end", { method: "POST" });
-  backToLive();
   loadSessionHistory();
 }
 
@@ -420,51 +402,16 @@ async function loadSessionHistory() {
     }
     container.innerHTML = data.sessions.map(s => `
       <div class="history-row">
-        <div class="cursor-pointer flex-1" onclick="viewSession(${s.id}, '${escapeHtml(s.name).replace(/'/g, "\\'")}')">
-          <div class="text-[var(--text)] hover:underline">${escapeHtml(s.name)}${s.is_active ? ' <span class="text-[var(--accent)]">●</span>' : ''}</div>
+        <div>
+          <div class="text-[var(--text)]">${escapeHtml(s.name)}${s.is_active ? ' <span class="text-[var(--accent)]">●</span>' : ''}</div>
           <div class="font-mono text-[10px] text-[var(--muted)]">${escapeHtml(s.created_at)} · ${s.present_count} present</div>
         </div>
-        <a href="/api/export_csv?session_id=${s.id}" onclick="event.stopPropagation()" class="btn btn-ghost !py-1 !px-2 text-[10px]">CSV</a>
+        <a href="/api/export_csv?session_id=${s.id}" class="btn btn-ghost !py-1 !px-2 text-[10px]">CSV</a>
       </div>
     `).join("");
   } catch (err) {
     container.innerHTML = `<p class="text-[var(--danger)]">Couldn't load session history.</p>`;
   }
-}
-
-// ---------------------------------------------------------------------
-// VIEWING PAST SESSIONS (read view — main ledger, "Back to Live" to exit)
-// ---------------------------------------------------------------------
-async function viewSession(id, name) {
-  const res = await fetch(`/api/records?session_id=${id}`);
-  const data = await res.json();
-  viewingSessionId = id;
-  renderLedger(data.records);
-
-  const banner = document.getElementById("viewingBanner");
-  banner.textContent = `Viewing archived session: "${name}" — live updates paused.`;
-  banner.classList.remove("hidden");
-  document.getElementById("backToLiveBtn").classList.remove("hidden");
-}
-
-function backToLive() {
-  viewingSessionId = null;
-  renderLedger(liveRecords);
-  document.getElementById("viewingBanner").classList.add("hidden");
-  document.getElementById("backToLiveBtn").classList.add("hidden");
-}
-
-// After an edit/delete, refresh whichever view is currently showing —
-// the server only auto-broadcasts the LIVE session, so if we're looking
-// at an archived one we have to re-fetch it ourselves.
-async function refreshCurrentView() {
-  if (viewingSessionId !== null) {
-    const res = await fetch(`/api/records?session_id=${viewingSessionId}`);
-    const data = await res.json();
-    renderLedger(data.records);
-    loadSessionHistory(); // present-count in the history list may have changed
-  }
-  // else: nothing to do — the websocket broadcast already updates liveRecords
 }
 
 // ---------------------------------------------------------------------
@@ -477,13 +424,11 @@ async function toggleStatus(id, currentStatus) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ status: newStatus })
   });
-  await refreshCurrentView();
 }
 
 async function deleteRecord(id) {
   if (!confirm("Delete this record permanently?")) return;
   await fetch(`/api/delete/${id}`, { method: "DELETE" });
-  await refreshCurrentView();
 }
 
 function openManualAddModal() {

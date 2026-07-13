@@ -59,21 +59,6 @@
     <h1 class="font-display text-2xl font-bold" id="pageTitle">Scan to Check In</h1>
   </div>
 
-  <!-- STAGE 0: this device already used (persistent lock, survives page refresh) -->
-  <div id="lockedStage" class="stage panel p-6 text-center">
-    <div class="badge-circle badge-locked mb-4">
-      <span class="font-mono text-lg">✓</span>
-    </div>
-    <p class="font-semibold mb-1">This device already checked someone in</p>
-    <p id="lockedDetails" class="text-sm text-[var(--muted)] mb-4"></p>
-    <p class="text-xs text-[var(--muted)] leading-relaxed">
-      Each device can only be used to check in one person. If this is a mistake, please ask a staff member.
-    </p>
-    <button onclick="resetThisDevice()" class="text-xs text-[var(--muted)] underline mt-4">
-      Not you? Reset this device
-    </button>
-  </div>
-
   <!-- STAGE 1: camera scanner -->
   <div id="scanStage" class="stage panel p-4">
     <div class="scan-frame mb-3">
@@ -132,12 +117,13 @@
 // ---------------------------------------------------------------------
 // STAGE MANAGEMENT
 // Only one of these is visible at a time:
-//   lockedStage  -> this device already completed a check-in (persists across reloads)
 //   scanStage    -> camera scanning, waiting for a valid QR code
 //   formStage    -> a token was just captured, name/ID form is now shown
 //   successStage -> check-in just succeeded
+// Every page load starts fresh at scanStage — nothing here persists
+// across a reload, so there's no "reset" button to reason about.
 // ---------------------------------------------------------------------
-const stages = ["lockedStage", "scanStage", "formStage", "successStage"];
+const stages = ["scanStage", "formStage", "successStage"];
 function showStage(id) {
   stages.forEach(s => document.getElementById(s).classList.remove("active"));
   document.getElementById(id).classList.add("active");
@@ -147,18 +133,15 @@ let scannedToken = null;
 let scanningActive = true;
 
 // ---------------------------------------------------------------------
-// DEVICE ID + LOCAL "ALREADY CHECKED IN" FLAG
+// DEVICE ID
 // ---------------------------------------------------------------------
-// deviceId is sent with every check-in so the SERVER can enforce "one
-// device = one person" even if local storage is cleared (it also checks
-// the submitting IP address, which localStorage can't touch).
-//
-// checkpoint_checked_in is a separate, purely front-end convenience: once
-// THIS device successfully checks someone in, we remember it here so the
-// page skips straight to a locked screen next time, instead of letting
-// someone open the camera again and wonder why a second submission fails.
-// Clearing it (via "Reset this device" below) only affects this cosmetic
-// layer — the server-side rule based on IP/device_id still applies.
+// A random ID generated once per browser and reused on every visit
+// (localStorage). Sent with every check-in so the SERVER can recognize
+// "this is the same phone" across page reloads — combined with the
+// submitting IP address, this is what actually stops one device from
+// checking in multiple different people. The check happens entirely
+// server-side (see app.py); this page never blocks anyone itself, it
+// just displays whatever message the server sends back.
 // ---------------------------------------------------------------------
 function getDeviceId() {
   const KEY = "checkpoint_device_id";
@@ -171,18 +154,6 @@ function getDeviceId() {
 }
 const deviceId = getDeviceId();
 
-function getLockedRecord() {
-  const raw = localStorage.getItem("checkpoint_checked_in");
-  return raw ? JSON.parse(raw) : null;
-}
-function setLockedRecord(full_name, id_number) {
-  localStorage.setItem("checkpoint_checked_in", JSON.stringify({ full_name, id_number }));
-}
-function resetThisDevice() {
-  localStorage.removeItem("checkpoint_checked_in");
-  location.reload();
-}
-
 const video = document.getElementById("video");
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d", { willReadFrequently: true });
@@ -192,16 +163,9 @@ const submitBtn = document.getElementById("submitBtn");
 const manualTokenInput = document.getElementById("manualToken");
 
 // ---------------------------------------------------------------------
-// ENTRY POINT: decide which stage to start on
+// ENTRY POINT
 // ---------------------------------------------------------------------
 function init() {
-  const locked = getLockedRecord();
-  if (locked) {
-    document.getElementById("lockedDetails").textContent =
-      `Checked in as ${locked.full_name} (${locked.id_number}).`;
-    showStage("lockedStage");
-    return; // don't even start the camera
-  }
   showStage("scanStage");
   startCamera();
 }
@@ -301,9 +265,10 @@ async function submitCheckin() {
     const data = await res.json();
 
     if (data.success) {
-      // Lock this device permanently (until manually reset) and stop
-      // the camera — no way to submit a second person from here on.
-      setLockedRecord(full_name, id_number);
+      // Stop the camera and show a confirmation — but nothing here is
+      // saved permanently. Reloading this page starts a fresh session
+      // at the scanner again; the server is what decides whether a
+      // second, different check-in from this device is allowed.
       stopCamera();
       document.getElementById("successDetails").textContent = data.message;
       showStage("successStage");
